@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Messenger Viewer with Archived + Stickers</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; display: flex; height: 100vh; background: #f0f0f0; }
+    #sidebar { width: 260px; background: #fff; border-right: 1px solid #ccc; padding: 10px; overflow-y: auto; }
+    .chat-title { padding: 8px; margin: 5px 0; cursor: pointer; border-radius: 4px; }
+    .chat-title:hover { background: #eee; }
+    .chat-title.active { background: #ddd; font-weight: bold; }
+
+    #chatContainer { flex: 1; padding: 20px; overflow-y: auto; }
+    .message { padding: 10px; margin: 10px; border-radius: 8px; max-width: 60%; clear: both; }
+    .left { background: #fff; text-align: left; float: left; }
+    .right { background: #dcf8c6; text-align: right; float: right; }
+    .sender { font-weight: bold; font-size: 0.9em; margin-bottom: 4px; }
+    .content { white-space: pre-wrap; }
+    img.media { max-width: 200px; max-height: 200px; margin-top: 6px; display: block; border-radius: 6px; }
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h3>Messenger Chats</h3>
+  <input type="file" id="folderInput" webkitdirectory directory multiple />
+  <div id="chatList"></div>
+</div>
+
+<div id="chatContainer">
+  <h2>Select a chat to view</h2>
+</div>
+
+<script>
+  const chatData = {};           // title => { messages, participants }
+  const fileBlobMap = {};        // filename => Blob URL (jpg, png, webp)
+
+  function decodeUnicode(str) {
+    try { return decodeURIComponent(escape(str)); } catch { return str; }
+  }
+
+  document.getElementById('folderInput').addEventListener('change', function (e) {
+    const files = [...e.target.files];
+    const chatList = document.getElementById('chatList');
+    chatList.innerHTML = '';
+
+    files.forEach(file => {
+      const path = file.webkitRelativePath;
+      const name = file.name.toLowerCase();
+
+      // 1. Cache all images by filename
+      if (/\.(jpg|jpeg|png|webp)$/i.test(name)) {
+        const reader = new FileReader();
+        reader.onload = function () {
+          const blobUrl = URL.createObjectURL(new Blob([reader.result]));
+          fileBlobMap[name] = blobUrl;
+        };
+        reader.readAsArrayBuffer(file);
+        return;
+      }
+
+      // 2. Detect message files
+      const validMsgPaths = ["inbox/", "e2ee_cutover/", "archived_threads/"];
+      const isMessageFile = validMsgPaths.some(p => path.includes(p)) && name === "message.json" || name.startsWith("message_") && name.endsWith(".json");
+
+      if (!isMessageFile) return;
+
+      const basePath = path.split('/').slice(0, -1).join('/') + '/';
+
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        try {
+          const json = JSON.parse(e.target.result);
+          if (!json.messages || (!json.title && !path.includes('archived_threads/'))) return;
+
+          // Title: normal or fallback to folder name for archived_threads
+          let title;
+          if (path.includes("archived_threads/")) {
+            // Use folder name right before message.json
+            const pathParts = path.split('/');
+            title = pathParts[pathParts.length - 2]; // e.g., "525192277690468"
+          } else {
+            title = decodeUnicode(json.title);
+          }
+
+          if (!chatData[title]) {
+            chatData[title] = { messages: [], participants: json.participants || [], basePath: basePath };
+            const chatItem = document.createElement('div');
+            chatItem.className = 'chat-title';
+            chatItem.textContent = title;
+            chatItem.addEventListener('click', () => displayChat(title, chatItem));
+            chatList.appendChild(chatItem);
+          }
+
+          chatData[title].messages = chatData[title].messages.concat(json.messages);
+        } catch {
+          console.warn("Invalid JSON:", file.name);
+        }
+      };
+      reader.readAsText(file);
+
+    });
+  });
+
+  function displayChat(title, selectedItem) {
+    document.querySelectorAll('.chat-title').forEach(el => el.classList.remove('active'));
+    selectedItem.classList.add('active');
+
+    const { messages, participants } = chatData[title];
+    const participant1 = decodeUnicode(participants[0].name);
+    const container = document.getElementById('chatContainer');
+    container.innerHTML = `<h2>${title}</h2>`;
+
+    messages.slice().reverse().forEach(msg => {
+      const sender = decodeUnicode(msg.sender_name);
+      const content = msg.content ? decodeUnicode(msg.content) : null;
+
+      const msgDiv = document.createElement('div');
+      msgDiv.className = 'message ' + (sender === participant1 ? 'left' : 'right');
+
+      const senderDiv = document.createElement('div');
+      senderDiv.className = 'sender';
+      senderDiv.textContent = sender;
+      msgDiv.appendChild(senderDiv);
+
+      if (content) {
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'content';
+        contentDiv.textContent = content;
+        msgDiv.appendChild(contentDiv);
+      }
+
+      // Unified image handling: photos + sticker_uris
+      const imageUris = [];
+
+      if (Array.isArray(msg.photos)) {
+        msg.photos.forEach(photo => {
+          if (photo.uri) imageUris.push(decodeUnicode(photo.uri));
+        });
+      }
+
+      if (Array.isArray(msg.sticker_uris)) {
+        msg.sticker_uris.forEach(uri => {
+          imageUris.push(decodeUnicode(uri));
+        });
+      }
+
+      let displayedImage = false;
+
+      imageUris.forEach(uri => {
+        const filename = uri.split('/').pop().toLowerCase();
+        const blobUrl = fileBlobMap[filename];
+
+        if (blobUrl) {
+          const img = document.createElement('img');
+          img.className = 'media';
+          img.src = blobUrl;
+          img.alt = '[Image]';
+          msgDiv.appendChild(img);
+          displayedImage = true;
+        } else {
+          const missing = document.createElement('div');
+          missing.className = 'content';
+          missing.textContent = `[Missing image: ${uri}]`;
+          msgDiv.appendChild(missing);
+        }
+      });
+
+      // Fallback if truly nothing to show
+      if (!content && imageUris.length === 0) {
+        const fallback = document.createElement('div');
+        fallback.className = 'content';
+        fallback.textContent = '[Unsupported or empty message]';
+        msgDiv.appendChild(fallback);
+      }
+
+
+      container.appendChild(msgDiv);
+    });
+  }
+</script>
+
+</body>
+</html>
