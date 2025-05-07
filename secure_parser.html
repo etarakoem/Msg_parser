@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Messenger Viewer (Flat Format + Media Folder)</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; display: flex; height: 100vh; background: #f0f0f0; }
+    #sidebar { width: 260px; background: #fff; border-right: 1px solid #ccc; padding: 10px; overflow-y: auto; }
+    .chat-title { padding: 8px; margin: 5px 0; cursor: pointer; border-radius: 4px; }
+    .chat-title:hover { background: #eee; }
+    .chat-title.active { background: #ddd; font-weight: bold; }
+
+    #chatContainer { flex: 1; padding: 20px; overflow-y: auto; }
+    .message { padding: 10px; margin: 10px; border-radius: 8px; max-width: 60%; clear: both; }
+    .left { background: #fff; text-align: left; float: left; }
+    .right { background: #dcf8c6; text-align: right; float: right; }
+    .sender { font-weight: bold; font-size: 0.9em; margin-bottom: 4px; }
+    .content { white-space: pre-wrap; }
+    img.media, video.media { max-width: 200px; max-height: 200px; margin-top: 6px; display: block; border-radius: 6px; }
+  </style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h3>Messenger Chats</h3>
+  <input type="file" id="folderInput" webkitdirectory directory multiple />
+  <div id="chatList"></div>
+</div>
+
+<div id="chatContainer">
+  <h2>Select a chat</h2>
+</div>
+
+<script>
+  const chatData = {};          // title => { messages, participants }
+  const fileBlobMap = {};       // filename => Blob URL (for media)
+
+  function decode(str) {
+    try { return decodeURIComponent(escape(str)); } catch { return str; }
+  }
+
+  document.getElementById('folderInput').addEventListener('change', function (e) {
+    const files = [...e.target.files];
+    const chatList = document.getElementById('chatList');
+    chatList.innerHTML = '';
+
+    files.forEach(file => {
+      const path = file.webkitRelativePath;
+      const name = file.name.toLowerCase();
+
+      // 1. Load media (png, jpg, webp, mp4...)
+      if (/media\//.test(path) && /\.(png|jpe?g|webp|mp4)$/i.test(name)) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const blobUrl = URL.createObjectURL(new Blob([reader.result]));
+          fileBlobMap[name] = blobUrl;
+        };
+        reader.readAsArrayBuffer(file);
+        return;
+      }
+
+      // 2. Load JSON chat files
+      if (name.endsWith('.json') && !path.includes('media/')) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const json = JSON.parse(reader.result);
+            const title = decode(json.threadName || file.name);
+            const messages = json.messages || [];
+            const participants = (json.participants || []).map(p => decode(p));
+
+            chatData[title] = { messages, participants };
+
+            const chatItem = document.createElement('div');
+            chatItem.className = 'chat-title';
+            chatItem.textContent = title;
+            chatItem.addEventListener('click', () => displayChat(title, chatItem));
+            chatList.appendChild(chatItem);
+          } catch (err) {
+            console.warn("Invalid JSON:", file.name);
+          }
+        };
+        reader.readAsText(file);
+      }
+    });
+  });
+
+  function displayChat(title, selectedItem) {
+    document.querySelectorAll('.chat-title').forEach(el => el.classList.remove('active'));
+    selectedItem.classList.add('active');
+
+    const { messages, participants } = chatData[title];
+    const p1 = participants[0] || "";
+    const container = document.getElementById('chatContainer');
+    container.innerHTML = `<h2>${title}</h2>`;
+
+    messages.forEach(msg => {
+      const sender = decode(msg.senderName || '');
+      const text = msg.text ? decode(msg.text) : null;
+
+      const msgDiv = document.createElement('div');
+      msgDiv.className = 'message ' + (sender === p1 ? 'left' : 'right');
+
+      const senderDiv = document.createElement('div');
+      senderDiv.className = 'sender';
+      senderDiv.textContent = sender;
+      msgDiv.appendChild(senderDiv);
+
+      if (text) {
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'content';
+        contentDiv.textContent = text;
+        msgDiv.appendChild(contentDiv);
+      }
+
+      // Unified media (images/videos)
+      if (Array.isArray(msg.media)) {
+        msg.media.forEach(mediaObj => {
+          if (!mediaObj.uri) return;
+          const uri = decode(mediaObj.uri);
+          const filename = uri.split('/').pop().toLowerCase();
+          const blobUrl = fileBlobMap[filename];
+
+          if (blobUrl) {
+            if (/\.(mp4)$/i.test(filename)) {
+              const vid = document.createElement('video');
+              vid.src = blobUrl;
+              vid.controls = true;
+              vid.className = 'media';
+              msgDiv.appendChild(vid);
+            } else {
+              const img = document.createElement('img');
+              img.src = blobUrl;
+              img.alt = '[Image]';
+              img.className = 'media';
+              msgDiv.appendChild(img);
+            }
+          } else {
+            const fallback = document.createElement('div');
+            fallback.className = 'content';
+            fallback.textContent = `[Missing media: ${uri}]`;
+            msgDiv.appendChild(fallback);
+          }
+        });
+      }
+
+      if (!text && (!msg.media || msg.media.length === 0)) {
+        const fallback = document.createElement('div');
+        fallback.className = 'content';
+        fallback.textContent = '[Unsupported or empty message]';
+        msgDiv.appendChild(fallback);
+      }
+
+      container.appendChild(msgDiv);
+    });
+  }
+</script>
+
+</body>
+</html>
